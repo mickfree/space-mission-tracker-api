@@ -1,11 +1,14 @@
+import os
 from datetime import datetime
 from msgspec import Meta
 from typing import Annotated, Literal
 
 from django_bolt import BoltAPI
 from django_bolt.exceptions import NotFound, HTTPException
-from django_bolt.param_functions import Query, Header
+from django_bolt.param_functions import Query, Header, Form, File
 from django_bolt.serializers import Serializer, field_validator
+from django_bolt.responses import PlainText, HTML, Redirect
+from django.template.loader import render_to_string
 
 from missions.models import Mission, Astronaut
 
@@ -20,8 +23,13 @@ async def mission_control_status():
     }
 
 # Path parameters
-@api.get("/missions/{mission_id}")
-async def get_missions(mission_id: int):
+@api.get(
+    "/missions/{mission_id}",
+    summary="Get mission details",
+    description="Retrieve detailed information about a specific space mission",
+    tags=["missions"],
+)
+async def get_mission(mission_id: int):
     try:
         mission = await Mission.objects.aget(id=mission_id)
         return {
@@ -165,3 +173,124 @@ async def get_classified_info(
         "classified_data": mission.classified_data,
         "clearance": clearance
     }
+
+# Form data
+class CreateAstronaut(Serializer):
+    name: Annotated[str, Meta(min_length=1, max_length=100)]
+    role: Annotated[str, Meta(min_length=1, max_length=20)]
+    age: Annotated[int, Meta(ge=30, le=100)]
+    country: Annotated[str, Meta(min_length=1, max_length=100)]
+
+    @field_validator('role')
+    def validate_role(cls, value):
+        valid_roles = Astronaut.Role.values
+        if value not in valid_roles:
+            raise ValueError(f"Role Must be one of: {', '.join(valid_roles)}")
+        return value
+
+
+@api.post("/missions/{mission_id}/astronauts")
+async def add_astronaut(
+    mission_id: int,
+    data: Annotated[CreateAstronaut, Form()]
+):
+    try:
+        mission = await Mission.objects.aget(id=mission_id)
+    except Mission.DoesNotExist:
+        raise NotFound(detail=f"Mission {mission_id} not found")
+    
+    astronaut = await Astronaut.objects.acreate(
+        name=data.name,
+        role=data.role,
+        age=data.age,
+        country=data.country,
+        mission=mission
+    )
+
+    return {
+        "id": astronaut.id,
+        "name": astronaut.name,
+        "role": astronaut.role,
+        "age": astronaut.age,
+        "country": astronaut.country,
+        "mission": mission.name
+    }
+
+# File Uploads
+@api.post("/missions/{mission_id}/patch")
+async def upload_mission_patch(
+    mission_id: int,
+    patch: Annotated[list[dict], File(alias="patch")]
+):
+
+    try:
+        mission = await Mission.objects.aget(id=mission_id)
+    except Mission.DoesNotExist:
+        raise HTTPException(status_code=404, detail=f"mission {mission_id} not found")
+    
+    if not patch:
+        raise HTTPException(status_code=400, detail="No file uploaded")
+    
+    file_info = patch[0]
+    filename = file_info.get("filename", "patch.png")
+    content = file_info.get("content", b"")
+    size = file_info.get("size", 0)
+
+    # save to media directory
+    save_path = f"media/patches/{mission_id}_{filename}"
+    os.makedirs("media/patches", exist_ok=True)
+    with open(save_path, "wb") as f:
+        f.write(content)
+
+    mission.patch_image = save_path
+    await mission.asave()
+
+    return {
+        "message": "Mission patch uploaded successfully",
+        "filename": filename,
+        "size": size,
+        "mission": mission.name 
+    }
+
+
+# Response types
+@api.get("/missions/{mission_id}/log")
+async def get_mission_log(mission_id: int):
+    try:
+        mission = await Mission.objects.aget(id=mission_id)
+    except Mission.DoesNotExist:
+        raise NotFound(detail=f"Mission {mission_id} not found")
+
+    log = f"""
+            === MISSION LOG: {mission.name} ===
+            Status: {mission.status.upper()}
+            Launch Date: {mission.launch_date or 'TBD'}
+            Description: {mission.description or 'No description'}
+            ================================
+            """.strip()
+
+    return PlainText(log)
+
+
+# Django templates
+@api.get("/status-page")
+async def status_page():
+    return HTML(render_to_string("status_page.html"))
+
+@api.get("/go")
+async def go_to_dashboard():
+    return Redirect("/status-page")
+
+@api.get("/dashboard")
+async def dashboard():
+    missions = []
+    async for mission in Mission.objects.all()[:20]:
+        missions.append({
+            "name": mission.name,
+            "status": mission.status,
+            "description": mission.description
+        })
+    context = {
+        "missions": missions
+    }
+    return HTML(render_to_string("dashboard.html", context))

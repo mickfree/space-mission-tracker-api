@@ -17,7 +17,8 @@ class Mission(models.Model):
     launch_date = models.DateField(null=True, blank=True)
     description = models.TextField(blank=True)
     clearance = models.CharField(max_length=100, null=True, blank=True, choices=Clearance.choices)
-    classified_data = models.CharField(max_length=255, null=True, blank=True) 
+    classified_data = models.CharField(max_length=255, null=True, blank=True)
+    patch_image = models.CharField(max_length=255, blank=True) 
 
     def __str__(self):
         return self.name
@@ -31,7 +32,7 @@ class Astronaut(models.Model):
         PILOT = "pilot", "Pilot"
 
     name = models.CharField(max_length=100)
-    role = models.CharField(max_length=100, default=Role.COMMANDER, choices=Role.choices)
+    role = models.CharField(max_length=20, default=Role.COMMANDER, choices=Role.choices)
     age = models.IntegerField(default=30)
     country = models.CharField(max_length=100)
     mission = models.ForeignKey(Mission, on_delete=models.CASCADE, related_name="astronauts")
